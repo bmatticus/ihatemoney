@@ -15,6 +15,7 @@ from smtplib import SMTPRecipientsRefused
 
 from dateutil.parser import parse
 from flask import (
+    jsonify,
     abort,
     Blueprint,
     current_app,
@@ -30,7 +31,7 @@ from flask import (
 )
 from flask_babel import get_locale, gettext as _
 from flask_mail import Message
-from sqlalchemy import orm
+from sqlalchemy import orm, func
 from werkzeug.exceptions import NotFound
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -46,7 +47,7 @@ from ihatemoney.forms import (
     get_billform_for,
     UploadForm,
 )
-from ihatemoney.models import db, Project, Person, Bill
+from ihatemoney.models import db, Project, Person, Bill, billowers
 from ihatemoney.utils import (
     Redirect303,
     list_of_dicts2json,
@@ -57,6 +58,7 @@ from ihatemoney.utils import (
 )
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+from datatables import ColumnDT, DataTables
 
 main = Blueprint("main", __name__)
 
@@ -601,6 +603,35 @@ def list_bills():
         current_view="list_bills",
     )
 
+@main.route("/<project_id>/data")
+def list_bills_data():
+    """Return server side data for list_bills"""
+    # defining columns
+    payer = db.aliased(Person)
+    payed_for = db.aliased(Person)
+
+    columns = [
+        ColumnDT(Bill.date),
+        ColumnDT(payer.name),
+        #ColumnDT(Bill.what),
+        ColumnDT(Project.id),
+        ColumnDT(payed_for.name),
+        ColumnDT(Bill.amount),
+        ColumnDT(Bill.id),
+        ColumnDT(Bill.external_link)
+    ]
+
+    # defining the initial query depending on your purpose
+    query = db.session.query().select_from(billowers).join(Bill).join(payer).filter(payer.project_id == g.project.id)
+
+    # GET parameters
+    params = request.args.to_dict()
+
+    # instantiating a DataTable for the query and table needed
+    rowTable = DataTables(params, query, columns)
+    # returns what is needed by DataTable
+    return jsonify(rowTable.output_result())
+
 
 @main.route("/<project_id>/members/add", methods=["GET", "POST"])
 def add_member():
@@ -752,17 +783,61 @@ def statistics():
         current_view="statistics",
     )
 
+@main.route("/<project_id>/statistics_data")
+def statistics_data():
+    """Return server side data for statistics"""
+    # defining columns
+    columns = [
+        ColumnDT(func.date(Bill.date)),
+        ColumnDT(func.sum(Bill.amount), global_search=False)
+    ]
+
+    # defining the initial query depending on your purpose
+    query = db.session.query()\
+        .select_from(Project)\
+        .join(Person)\
+        .join(Bill)\
+        .filter(Project.id == g.project.id)\
+        .group_by(func.date(Bill.date))
+
+    # GET parameters
+    params = request.args.to_dict()
+
+    # instantiating a DataTable for the query and table needed
+    rowTable = DataTables(params, query, columns)
+    # returns what is needed by DataTable
+    return jsonify(rowTable.output_result())
 
 @main.route("/dashboard")
 @requires_admin()
 def dashboard():
     is_admin_dashboard_activated = current_app.config["ACTIVATE_ADMIN_DASHBOARD"]
-    return render_template(
-        "dashboard.html",
-        projects=Project.query.all(),
-        is_admin_dashboard_activated=is_admin_dashboard_activated,
-    )
+    return render_template('dashboard.html',
+                           is_admin_dashboard_activated=is_admin_dashboard_activated)
 
+@main.route("/dashboard_data")
+@requires_admin()
+def dashboard_datatables_data():
+    """Return server side data for dashboard"""
+    # defining columns
+    columns = [
+        ColumnDT(Project.id),
+        ColumnDT(func.count(func.distinct(Project.members)), global_search=False),
+        ColumnDT(func.count(func.distinct(Bill.id)), global_search=False),
+        ColumnDT(func.date(func.min(Bill.date)), global_search=False),
+        ColumnDT(func.date(func.max(Bill.date)), global_search=False)
+    ]
+
+    # defining the initial query depending on your purpose
+    query = db.session.query().select_from(Project).outerjoin(Person).outerjoin(Bill).group_by(Project.id)
+
+    # GET parameters
+    params = request.args.to_dict()
+
+    # instantiating a DataTable for the query and table needed
+    rowTable = DataTables(params, query, columns)
+    # returns what is needed by DataTable
+    return jsonify(rowTable.output_result())
 
 @main.route("/favicon.ico")
 def favicon():
